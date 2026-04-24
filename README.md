@@ -116,6 +116,11 @@ Secure Vault Upload
 
 Strips toxic capabilities from the Administrator role. Configurable via dashboard, enforced at WordPress capability level. Requires Superkey confirmation for every change.
 
+<img width="1733" height="855" alt="{82C71EAF-A3BC-4455-B70B-599A1EDA1916}" src="https://github.com/user-attachments/assets/0ec0e5f4-5353-4877-85b3-2f6f2b49d198" />
+
+
+
+
 | Capability | Risk if Retained | Default |
 |---|---|---|
 | `activate_plugins` | Install backdoor plugins | Stripped |
