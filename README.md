@@ -35,7 +35,8 @@ Found a vulnerability or have an improvement? **Open an issue or contact us.**
 
 ---
 
-<img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/9bd31b2a-4b20-406b-8b3b-048fdb30c26f" />
+<img width="2816" height="1536" alt="Gemini_Generated_Image_i5yze3i5yze3i5yz" src="https://github.com/user-attachments/assets/2960ced5-f61a-4831-87cb-3d0825d2cf76" />
+
 
 
 ## 🔍 What is Throne Guard?
