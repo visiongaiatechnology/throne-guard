@@ -35,6 +35,9 @@ Found a vulnerability or have an improvement? **Open an issue or contact us.**
 
 ---
 
+<img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/9bd31b2a-4b20-406b-8b3b-048fdb30c26f" />
+
+
 ## 🔍 What is Throne Guard?
 
 Throne Guard is a **WordPress hardening plugin that removes the most dangerous capabilities from the Administrator role** and places them behind a separate Master role gated by a Superkey.
