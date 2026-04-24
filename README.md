@@ -64,9 +64,6 @@ Throne Guard Approach:
 
 ---
 
-<img width="1350" height="770" alt="{FD971F9E-66CA-48D2-B3A0-CEFB158648D1}" src="https://github.com/user-attachments/assets/e34d60f9-e08c-4257-a36b-4c64b4a76c18" />
-
-
 
 
 ## 🏛️ Architecture
@@ -145,6 +142,9 @@ All capabilities are re-assignable to Administrator via the dashboard, provided 
 ### 🔐 Superkey Gate
 
 Zero-trust session gating for the Master role.
+
+<img width="1350" height="770" alt="{FD971F9E-66CA-48D2-B3A0-CEFB158648D1}" src="https://github.com/user-attachments/assets/e34d60f9-e08c-4257-a36b-4c64b4a76c18" />
+
 
 | Feature | Detail |
 |---|---|
