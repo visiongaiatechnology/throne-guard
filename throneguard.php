@@ -20,13 +20,11 @@ if (!defined('ABSPATH')) {
 
 /* --------------------------- 1.5.A - Exception Hierarchy --------------------------- */
 class AppException extends Exception {}
-class ValidationException extends AppException {}  // USER-FACING: Message shown verbatim
-class SecurityException extends AppException {}    // INTERNAL: Generic message to client, full detail to error_log
-class StorageException extends AppException {}     // INTERNAL: Generic message to client, full detail to error_log
+class ValidationException extends AppException {}  
+class SecurityException extends AppException {}    
+class StorageException extends AppException {}     
 
 /* --------------------------- 1.5.C - Error Handler Consistency --------------------------- */
-// REDTEAM FIX: Asymmetric DoS Vector geschlossen. 
-// Keine globalen Error-Exceptions mehr, die von WP-Core-Warnungen getriggert werden können.
 ini_set('display_errors', '0');
 ini_set('log_errors', '1');
 error_reporting(E_ALL & ~E_NOTICE & ~E_DEPRECATED);
@@ -38,7 +36,6 @@ final class MasterUserControlPlugin {
     private const DB_VERSION = '1.0';
     private static ?string $csp_nonce = null;
     
-    // REDTEAM: Definition toxischer Privilegien, die von Admins gestrippt werden können
     private const TOXIC_CAPABILITIES = [
         'activate_plugins', 'delete_plugins', 'install_plugins', 'edit_plugins', 'update_plugins',
         'switch_themes', 'edit_themes', 'install_themes', 'delete_themes', 'update_themes',
@@ -46,7 +43,7 @@ final class MasterUserControlPlugin {
     ];
 
     public function __construct() {
-        // REDTEAM FIX (Ansatz 1): Pre-Flight WAF Interceptor. Tötet RCE-Payloads in MS 0.
+        // Pre-Flight WAF Interceptor
         $this->pre_flight_waf();
 
         register_activation_hook(__FILE__, [$this, 'activate']);
@@ -57,21 +54,28 @@ final class MasterUserControlPlugin {
         add_action('admin_post_mcp_upload_file', [$this, 'handle_file_upload']);
         add_action('admin_post_mcp_admin_hardening', [$this, 'handle_admin_hardening']);
         
-        // REDTEAM FIX: Zero-Trust Session Gating
+        // Zero-Trust Session Gating (GUI)
         add_action('admin_init', [$this, 'enforce_backend_lock'], 1);
         add_action('admin_post_mcp_unlock_backend', [$this, 'handle_backend_unlock']);
         add_action('clear_auth_cookie', [$this, 'destroy_backend_lock_cookie']);
         
-        // CSP auf Frontend beschränkt, um WP-Admin-Core nicht durch unsafe-inline Blockaden zu zerstören
+        // REDTEAM FIX (v2.5.4): Zero-Trust Session Gating (Headless/API)
+        add_action('rest_api_init', [$this, 'enforce_api_lock'], 1);
+        add_action('xmlrpc_call', [$this, 'enforce_api_lock'], 1);
+
+        // CSP & Frontend
         add_action('wp_headers', [$this, 'inject_security_headers']); 
         add_action('wp_footer', [$this, 'render_frontend_script']);
         
-        // REDTEAM FIX: Role Jailing
+        // Role Jailing & Stealth
         add_filter('editable_roles', [$this, 'filter_editable_roles']);
-        
-        // REDTEAM FIX: Plugin Stealth & Deactivation Guard
         add_filter('all_plugins', [$this, 'hide_plugin_from_admins']);
         add_action('deactivate_plugin', [$this, 'prevent_unauthorized_deactivation'], 10, 2);
+
+        // UI & Execution Backdoor Seals
+        add_action('admin_bar_menu', [$this, 'neuter_admin_bar'], 9999);
+        add_action('admin_menu', [$this, 'neuter_sidebar_menu'], 9999);
+        add_action('admin_init', [$this, 'block_third_party_admin_pages'], 2);
     }
 
     public static function get_csp_nonce(): string {
@@ -93,7 +97,6 @@ final class MasterUserControlPlugin {
         return $headers;
     }
 
-    /* --------------------------- 3.6 - API Security (CSRF for WP) --------------------------- */
     private function generate_csrf_token(): string {
         $token = bin2hex(random_bytes(32));
         update_user_meta(get_current_user_id(), '_mcp_csrf_token', $token);
@@ -106,7 +109,7 @@ final class MasterUserControlPlugin {
         if (empty($stored) || !hash_equals($stored, $token)) {
             throw new SecurityException('CSRF token validation failed or token expired.');
         }
-        delete_user_meta($user_id, '_mcp_csrf_token'); // Strict single-use consumption
+        delete_user_meta($user_id, '_mcp_csrf_token'); 
     }
 
     /* --------------------------- 2.0 - Activation / Deactivation --------------------------- */
@@ -116,23 +119,20 @@ final class MasterUserControlPlugin {
             $this->seed_default_roles();
             $this->sync_core_roles(); 
             $this->bootstrap_first_master(); 
-            $this->enforce_global_upload_jail(); // REDTEAM FIX (Ansatz 2): Uploads Jail initialisieren
+            $this->enforce_global_upload_jail();
             add_option('mcp_db_version', self::DB_VERSION);
-            add_option('mcp_superkey_hash', ''); // Initiale leere Superkey Option
+            add_option('mcp_superkey_hash', ''); 
         } catch (Throwable $e) {
             error_log('[FATAL] Activation failed: ' . $e->getMessage());
             wp_die('Systemfehler bei der Aktivierung. Siehe Server-Logs.');
         }
     }
 
-    public function deactivate(): void {
-        // Drop Tables entfernt für Data Retention
-    }
+    public function deactivate(): void {}
 
     private function create_tables(): void {
         global $wpdb;
         $charset = $wpdb->get_charset_collate();
-        
         $sql_roles = "CREATE TABLE IF NOT EXISTS {$wpdb->prefix}mcp_user_roles (
             id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
             role_key VARCHAR(64) NOT NULL,
@@ -146,16 +146,9 @@ final class MasterUserControlPlugin {
 
     private function seed_default_roles(): void {
         global $wpdb;
-        $roles = [
-            ['master', 'Master', 'All-Power-User'],
-            ['admin', 'Administrator', 'Standard-Administrator']
-        ];
+        $roles = [['master', 'Master', 'All-Power-User'], ['admin', 'Administrator', 'Standard-Administrator']];
         foreach ($roles as $r) {
-            $wpdb->insert(
-                $wpdb->prefix . 'mcp_user_roles',
-                ['role_key' => $r[0], 'role_name' => $r[1], 'role_description' => $r[2]],
-                ['%s', '%s', '%s']
-            );
+            $wpdb->insert($wpdb->prefix . 'mcp_user_roles', ['role_key' => $r[0], 'role_name' => $r[1], 'role_description' => $r[2]], ['%s', '%s', '%s']);
         }
     }
 
@@ -199,12 +192,9 @@ final class MasterUserControlPlugin {
     /* -------------------------------------------------------------------------
      * SECTION 2.1 - WAF & GLOBAL JAIL (RCE PREVENTION)
      * ------------------------------------------------------------------------- */
-
     private function pre_flight_waf(): void {
         if (empty($_FILES)) return;
         
-        // REDTEAM FIX: Scoping der WAF auf Admin- und dedizierte Plugin-Routen,
-        // um Collateral Damage im Frontend zu verhindern.
         $is_admin = is_admin() || (strpos($_SERVER['REQUEST_URI'] ?? '', '/wp-admin/') !== false);
         $is_mcp = isset($_POST['action']) && strpos((string)$_POST['action'], 'mcp_') === 0;
         if (!$is_admin && !$is_mcp) return;
@@ -214,8 +204,6 @@ final class MasterUserControlPlugin {
         
         $check_name = function(string $filename) use ($toxic_exts, $toxic_pattern) {
             $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
-            // REDTEAM FIX: Dynamisches Pattern triggert jetzt bei JEDER toxischen Endung, 
-            // auch innerhalb eines Double-Extension Dateinamens (z.B. shell.phar.jpg)
             if (in_array($ext, $toxic_exts, true) || preg_match('/\.(' . $toxic_pattern . ')\./i', $filename)) {
                 error_log('[VGT WAF] AFW Intercepted: ' . $filename);
                 http_response_code(403);
@@ -264,7 +252,6 @@ final class MasterUserControlPlugin {
 
 EOT;
 
-        // REDTEAM FIX: Append statt Overwrite, um legitime Custom-Rules (z.B. WebP) zu schonen
         if (file_exists($htaccess_path)) {
             $content = (string)file_get_contents($htaccess_path);
             if (strpos($content, '# BEGIN VGT REDTEAM') === false) {
@@ -276,17 +263,85 @@ EOT;
     }
 
     /* -------------------------------------------------------------------------
-     * SECTION 2.5 - ZERO-TRUST SESSION GATING (Admin Lock)
+     * SECTION 2.5 - ZERO-TRUST ADMIN NEUTERING (BAR, SIDEBAR & ROUTING)
      * ------------------------------------------------------------------------- */
     
+    public function neuter_admin_bar(WP_Admin_Bar $wp_admin_bar): void {
+        if (current_user_can('mcp_master_access')) return;
+
+        $admin_role = get_role('administrator');
+        if ($admin_role && !$admin_role->has_cap('activate_plugins')) {
+            $allowed_nodes = [
+                'menu-toggle', 'wp-logo', 'site-name', 'view-site', 
+                'my-account', 'user-info', 'edit-profile', 'logout'
+            ];
+            
+            $all_nodes = $wp_admin_bar->get_nodes();
+            if ($all_nodes) {
+                foreach ($all_nodes as $node) {
+                    if (!in_array($node->id, $allowed_nodes, true)) {
+                        $wp_admin_bar->remove_node($node->id);
+                    }
+                }
+            }
+        }
+    }
+
+    public function neuter_sidebar_menu(): void {
+        if (current_user_can('mcp_master_access')) return;
+
+        $admin_role = get_role('administrator');
+        if ($admin_role && !$admin_role->has_cap('activate_plugins') && current_user_can('manage_options')) {
+            global $menu;
+            
+            $allowed_core_menus = [
+                'index.php', 'edit.php', 'upload.php', 'edit.php?post_type=page',
+                'edit-comments.php', 'themes.php', 'plugins.php', 'users.php',
+                'tools.php', 'options-general.php', 'options-writing.php', 'options-reading.php',
+                'options-discussion.php', 'options-media.php', 'options-permalink.php', 'profile.php',
+                'separator1', 'separator2', 'separator-last'
+            ];
+            
+            if (is_array($menu)) {
+                foreach ($menu as $key => $item) {
+                    if (!in_array($item[2], $allowed_core_menus, true)) {
+                        remove_menu_page($item[2]);
+                    }
+                }
+            }
+        }
+    }
+
+    public function block_third_party_admin_pages(): void {
+        if (current_user_can('mcp_master_access')) return;
+
+        $admin_role = get_role('administrator');
+        if ($admin_role && !$admin_role->has_cap('activate_plugins') && current_user_can('manage_options')) {
+            // REDTEAM FIX (v2.5.4): Radikale Blockade für jeglichen Parameter "page"
+            // Dies fängt nun auch Plugins unter options-general.php, tools.php etc. ab.
+            if (isset($_GET['page'])) {
+                error_log('[VGT NEUTERING] Blocked unauthorized access to 3rd party plugin UI: ' . $_GET['page']);
+                wp_die('VGT Zero-Trust Enclave: Der Zugriff auf Third-Party-Schnittstellen ist gesperrt.', 'Access Denied', ['response' => 403]);
+            }
+        }
+    }
+
+    // REDTEAM FIX (v2.5.4): Headless / API Lock Enforcement
+    public function enforce_api_lock(): void {
+        if (!current_user_can('mcp_master_access')) return;
+        if (empty(get_option('mcp_superkey_hash', ''))) return;
+        
+        if (!$this->is_session_unlocked()) {
+            wp_die('VGT Enclave Locked: API execution blocked.', 'Unauthorized', 401);
+        }
+    }
+
     public function enforce_backend_lock(): void {
-        // Gating gilt exklusiv für Accounts der Master-Ebene
         if (!current_user_can('mcp_master_access')) return;
 
         $superkey_hash = get_option('mcp_superkey_hash', '');
-        if (empty($superkey_hash)) return; // Kein Superkey definiert -> Kein Lockout
+        if (empty($superkey_hash)) return; 
 
-        // REDTEAM FIX: AJAX Bypass geschlossen
         if (defined('DOING_AJAX') && DOING_AJAX) {
             if ($this->is_session_unlocked()) {
                 return;
@@ -294,7 +349,6 @@ EOT;
             wp_die('VGT Enclave Locked.', '', 401);
         }
 
-        // REDTEAM FIX: Action-Spoofing Routing-Gate geschlossen
         global $pagenow;
         if ($pagenow === 'admin-post.php' && isset($_POST['action']) && $_POST['action'] === 'mcp_unlock_backend') {
             return;
@@ -302,7 +356,6 @@ EOT;
 
         if ($this->is_session_unlocked()) return;
 
-        // Access verweigert - Rendering der Enklave
         $this->render_lock_screen();
         exit;
     }
@@ -313,18 +366,15 @@ EOT;
 
         $token = (string)$_COOKIE[$cookie_name];
 
-        // REDTEAM FIX (003): Ephemeres Token & Timestamp serverseitig validieren
         $stored_data = get_user_meta(get_current_user_id(), '_mcp_vault_session', true);
         if (empty($stored_data)) return false;
 
         $stored_parts = explode('|', (string)$stored_data);
         if (count($stored_parts) !== 2 || time() > (int)$stored_parts[0]) {
-            delete_user_meta(get_current_user_id(), '_mcp_vault_session'); // Auto-Cleanup
+            delete_user_meta(get_current_user_id(), '_mcp_vault_session'); 
             return false;
         }
 
-        // Exakter Vergleich des empfangenen Strings mit dem serverseitigen Speicher
-        // Jede Client-Manipulation von Timestamp oder Secret wirft false.
         return hash_equals((string)$stored_data, $token);
     }
 
@@ -376,17 +426,15 @@ EOT;
         $provided_key = $_POST['superkey'] ?? '';
 
         if (empty($superkey_hash) || !password_verify($provided_key, $superkey_hash)) {
-            sleep(2); // Anti-Bruteforce Penalty
+            sleep(2); 
             wp_redirect(admin_url('?mcp_locked=1&mcp_error=1'));
             exit;
         }
 
-        // REDTEAM FIX (003): Serverseitiges Expiration-Enforcement
         $expiration = time() + (2 * 3600);
         $session_data = $expiration . '|' . bin2hex(random_bytes(32));
         update_user_meta(get_current_user_id(), '_mcp_vault_session', $session_data);
 
-        // Das Cookie bekommt exakt den String, der auch in der DB liegt
         $token = $session_data;
         $cookie_name = 'mcp_vault_key_' . get_current_user_id();
         
@@ -426,7 +474,6 @@ EOT;
     }
 
     public function render_dashboard(): void {
-        // REDTEAM FIX (Ansatz 2): Auto-Heal des Execution Jails bei jedem Dashboard-Aufruf
         $this->enforce_global_upload_jail();
         
         $csrf_token = $this->generate_csrf_token();
@@ -449,7 +496,6 @@ EOT;
                 <div class="notice notice-error is-dismissible"><p>Sicherheitsverletzung: Superkey ungültig oder Aktion abgelehnt.</p></div>
             <?php endif; ?>
 
-            <!-- REDTEAM FIX: Admin Neutering Interface -->
             <div style="background: #fff; padding: 20px; border: 1px solid #ccd0d4; margin-bottom: 20px;">
                 <h2 style="margin-top: 0; color: #d63638;">☢️ Admin Neutering (Zero-Trust Override)</h2>
                 <p>Entziehe der Rolle <strong>Administrator</strong> kritische Rechte. Ein Angreifer, der Admin-Zugriff erhält, ist machtlos.</p>
@@ -541,24 +587,19 @@ EOT;
 
             $superkey_hash = get_option('mcp_superkey_hash', '');
             
-            // 1. Superkey Verification oder Initialization
             if (empty($superkey_hash)) {
-                // Init mode
                 $new_key = $_POST['new_superkey'] ?? '';
                 if (strlen($new_key) < 12) throw new ValidationException('Superkey muss mind. 12 Zeichen haben.');
                 $hash = password_hash($new_key, PASSWORD_DEFAULT);
                 update_option('mcp_superkey_hash', $hash);
             } else {
-                // Verify mode
                 $provided_key = $_POST['superkey'] ?? '';
                 if (!password_verify($provided_key, $superkey_hash)) {
-                    // Anti-Bruteforce Timing Penalty
                     sleep(2);
                     throw new SecurityException('Superkey inkorrekt.');
                 }
             }
 
-            // 2. Apply Capabilities to 'administrator'
             $admin_role = get_role('administrator');
             if (!$admin_role) throw new StorageException('Admin role missing.');
             
@@ -694,7 +735,6 @@ EOT;
                 }
                 umask($old_umask);
                 file_put_contents($upload_dir . '/.htaccess', "Require all denied\nOptions -Indexes");
-                // REDTEAM FIX: Fallback für Nginx/Caddy Directory Listing Protection
                 file_put_contents($upload_dir . '/index.php', "<?php\n// Silence is golden.");
             }
 
@@ -743,7 +783,7 @@ EOT;
     }
 
     /* -------------------------------------------------------------------------
-     * SECTION 7 - FRONTEND USER-DATA RENDERING (Pattern 1.5.F)
+     * SECTION 7 - FRONTEND USER-DATA RENDERING
      * ------------------------------------------------------------------------- */
     public function render_frontend_script(): void {
         if (!is_user_logged_in()) return;
